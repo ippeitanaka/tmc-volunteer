@@ -2070,18 +2070,48 @@ function UserAdmin() {
 function Memos({ note, profile }: { note: (text: string) => void; profile: UserProfile }) {
   const [memos, setMemos] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     let active = true;
-    void supabase?.from("activity_memos")
-      .select("id, free_memo, participations(volunteer_events(title), users(name, student_number))")
-      .eq("visibility", "pending")
-      .order("created_at", { ascending: false })
-      .then(({ data }) => {
-        if (active) {
-          setMemos(data ?? []);
-          setLoading(false);
-        }
+    async function loadMemos() {
+      if (!supabase) return;
+
+      const { data: pendingMemos, error: memoError } = await supabase
+        .from("activity_memos")
+        .select("id, free_memo, user_id, participation_id, created_at")
+        .eq("visibility", "pending")
+        .order("created_at", { ascending: false });
+
+      if (memoError) throw memoError;
+      if (!pendingMemos?.length) return [];
+
+      const [{ data: students, error: studentError }, { data: participations, error: participationError }] = await Promise.all([
+        supabase.from("users").select("id, name, student_number").in("id", pendingMemos.map((memo) => memo.user_id)),
+        supabase.from("participations").select("id, volunteer_events(title)").in("id", pendingMemos.map((memo) => memo.participation_id)),
+      ]);
+
+      if (studentError) throw studentError;
+      if (participationError) throw participationError;
+
+      const studentById = new Map((students ?? []).map((student) => [student.id, student]));
+      const participationById = new Map((participations ?? []).map((participation) => [participation.id, participation]));
+      return pendingMemos.map((memo) => ({
+        ...memo,
+        student: studentById.get(memo.user_id),
+        participation: participationById.get(memo.participation_id),
+      }));
+    }
+
+    void loadMemos()
+      .then((data) => {
+        if (active) setMemos(data ?? []);
+      })
+      .catch(() => {
+        if (active) setError("共有メモを取得できませんでした。管理者権限と Supabase の接続を確認してください。");
+      })
+      .finally(() => {
+        if (active) setLoading(false);
       });
     return () => { active = false; };
   }, []);
@@ -2108,14 +2138,12 @@ function Memos({ note, profile }: { note: (text: string) => void; profile: UserP
         後輩に役立つ内容である
       </p>
       <div className="mt-4 space-y-4">
-        {loading ? <p className="text-sm text-slate-500">共有メモを読み込んでいます...</p> : memos.length === 0 ? <p className="text-sm text-slate-500">公開確認待ちのメモはありません。</p> : memos.map((memo) => {
-          const participation = Array.isArray(memo.participations) ? memo.participations[0] : memo.participations;
-          const student = Array.isArray(participation?.users) ? participation.users[0] : participation?.users;
-          const event = Array.isArray(participation?.volunteer_events) ? participation.volunteer_events[0] : participation?.volunteer_events;
+        {loading ? <p className="text-sm text-slate-500">共有メモを読み込んでいます...</p> : error ? <p className="rounded-xl bg-rose-50 p-4 text-sm font-bold text-rose-800">{error}</p> : memos.length === 0 ? <p className="text-sm text-slate-500">公開確認待ちのメモはありません。</p> : memos.map((memo) => {
+          const event = Array.isArray(memo.participation?.volunteer_events) ? memo.participation.volunteer_events[0] : memo.participation?.volunteer_events;
           return <article key={memo.id} className="rounded-xl border p-4">
             <div className="flex justify-between gap-3">
               <span>
-                <b>{student?.name} / {student?.student_number}</b>
+                <b>{memo.student?.name} / {memo.student?.student_number}</b>
                 <small className="ml-2 text-slate-500">{event?.title}</small>
               </span>
               <Tag>公開確認中</Tag>
