@@ -895,7 +895,7 @@ function Student({ screen, go, records, setRecords, selectedRecordId, setSelecte
       <Event record={records.find((record: Record) => record.id === selectedRecordId) ?? records[0]} go={go} setRecords={setRecords} note={note} profile={profile} />
     );
   if (screen === "event") return <EmptyActivities go={go} />;
-  if (screen === "ranking") return <Ranking visible={ranking} hasActivities={records.length > 0} />;
+  if (screen === "ranking") return <Ranking visible={ranking} hasActivities={records.length > 0} profile={profile} />;
   return <Profile note={note} profile={profile} records={records} />;
 }
 function Home({ go, records, ranking, profile, loading }: any) {
@@ -1368,8 +1368,24 @@ function SharedMemos() {
     </div>
   );
 }
-function Ranking({ visible, hasActivities }: { visible: boolean; hasActivities: boolean }) {
+function Ranking({ visible, hasActivities, profile }: { visible: boolean; hasActivities: boolean; profile: UserProfile }) {
   const [tab, setTab] = useState("月間");
+  const [entries, setEntries] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const period = tab === "月間" ? "monthly" : tab === "年間" ? "yearly" : "all_time";
+    let active = true;
+    setLoading(true);
+    void supabase?.rpc("get_volunteer_ranking", { period })
+      .then(({ data }) => {
+        if (active) {
+          setEntries(data ?? []);
+          setLoading(false);
+        }
+      });
+    return () => { active = false; };
+  }, [tab]);
   if (!visible)
     return (
       <div className="grid min-h-96 place-items-center text-center">
@@ -1408,10 +1424,11 @@ function Ranking({ visible, hasActivities }: { visible: boolean; hasActivities: 
           </button>
         ))}
       </div>
+      {loading ? <p className="text-sm text-slate-500">ランキングを読み込んでいます...</p> : entries.length === 0 ? <p className="rounded-xl bg-white p-5 text-sm text-slate-500">この期間のランキング対象者はいません。</p> : <>
       <div className="grid gap-4 md:grid-cols-3">
-        {students.slice(0, 3).map((s, i) => (
+        {entries.slice(0, 3).map((entry, i) => (
           <article
-            key={s.number}
+            key={entry.user_id}
             className={`rounded-2xl border p-5 ${["border-amber-300 bg-amber-50", "border-slate-300 bg-slate-50", "border-orange-300 bg-orange-50"][i]}`}
           >
             <Medal
@@ -1421,35 +1438,36 @@ function Ranking({ visible, hasActivities }: { visible: boolean; hasActivities: 
               size={27}
             />
             <b className="mt-4 block text-2xl">{i + 1}位</b>
-            <h2 className="mt-2 font-black">{s.name}</h2>
+            <h2 className="mt-2 font-black">{entry.display_name}</h2>
             <p className="text-sm text-slate-600">
-              {s.stamps} スタンプ / {s.points}pt
+              {entry.stamp_count} スタンプ / {entry.point_total}pt
             </p>
           </article>
         ))}
       </div>
       <Card title={`${tab}ランキング`}>
-        {students.map((s, i) => (
+        {entries.map((entry, i) => (
           <div
-            key={s.number}
-            className={`grid grid-cols-[2rem_1fr_auto] items-center gap-3 border-b p-3 text-sm last:border-0 ${s.name === "田中 一平" ? "rounded-xl border-2 border-orange-400 bg-orange-50" : ""}`}
+            key={entry.user_id}
+            className={`grid grid-cols-[2rem_1fr_auto] items-center gap-3 border-b p-3 text-sm last:border-0 ${entry.user_id === profile.id ? "rounded-xl border-2 border-orange-400 bg-orange-50" : ""}`}
           >
             <b>{i + 1}</b>
             <span>
-              <b>{s.name}</b>
-              {s.name === "田中 一平" && (
+              <b>{entry.display_name}</b>
+              {entry.user_id === profile.id && (
                 <small className="ml-2 text-orange-600">あなた</small>
               )}
             </span>
             <span>
-              <b>{s.stamps}</b>個{" "}
+              <b>{entry.stamp_count}</b>個{" "}
               <small className="block text-slate-500">
-                {s.points}pt / {s.hours}時間
+                {entry.point_total}pt / {entry.activity_hours}時間
               </small>
             </span>
           </div>
         ))}
       </Card>
+      </>}
     </div>
   );
 }
