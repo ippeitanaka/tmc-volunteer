@@ -49,7 +49,7 @@ type Screen =
   | "awards"
   | "logs";
 type Record = {
-  id: number;
+  id: string | number;
   title: string;
   date: string;
   location: string;
@@ -265,11 +265,54 @@ async function getUserProfile(userId: string): Promise<UserProfile | null> {
   return data as UserProfile | null;
 }
 
+async function getParticipationRecords(userId: string): Promise<Record[]> {
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from("participations")
+    .select(
+      "id, activity_hours, points, awarded_at, status, volunteer_events(title, event_date, location, category, stamps(display_text))",
+    )
+    .eq("user_id", userId)
+    .eq("status", "awarded")
+    .order("awarded_at", { ascending: false });
+
+  if (error) throw error;
+
+  return (data ?? []).flatMap((participation) => {
+    const event = Array.isArray(participation.volunteer_events)
+      ? participation.volunteer_events[0]
+      : participation.volunteer_events;
+    const rawStamp = event?.stamps;
+    const stamp = Array.isArray(rawStamp) ? rawStamp[0] : rawStamp;
+
+    if (!event) return [];
+
+    return [{
+      id: participation.id,
+      title: event.title,
+      date: new Intl.DateTimeFormat("ja-JP", {
+        timeZone: "Asia/Tokyo",
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      }).format(new Date(`${event.event_date}T00:00:00+09:00`)),
+      location: event.location,
+      hours: Number(participation.activity_hours),
+      points: participation.points,
+      code: stamp?.display_text ?? "TMC",
+      category: event.category,
+      memo: "未入力",
+    }];
+  });
+}
+
 export default function App() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [screen, setScreen] = useState<Screen>("home");
-  const [records, setRecords] = useState(activity);
+  const [records, setRecords] = useState<Record[]>([]);
+  const [recordsLoading, setRecordsLoading] = useState(false);
   const [toast, setToast] = useState("");
   const [ranking, setRanking] = useState(true);
   const [dialog, setDialog] = useState<"award" | "delete" | "stop" | null>(
@@ -314,6 +357,35 @@ export default function App() {
   }, []);
 
   const role = profile?.role ?? null;
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadRecords() {
+      if (!profile || profile.role !== "student") {
+        if (active) setRecords([]);
+        return;
+      }
+
+      setRecordsLoading(true);
+      try {
+        const loadedRecords = await getParticipationRecords(profile.id);
+        if (active) setRecords(loadedRecords);
+      } catch {
+        if (active) {
+          setRecords([]);
+          note("活動記録を取得できませんでした。");
+        }
+      } finally {
+        if (active) setRecordsLoading(false);
+      }
+    }
+
+    void loadRecords();
+    return () => {
+      active = false;
+    };
+  }, [profile]);
 
   if (authLoading) {
     return <main className="grid min-h-screen place-items-center bg-slate-100"><p className="rounded-xl bg-white px-5 py-4 text-sm font-bold text-slate-600 shadow-sm">ログイン情報を確認しています...</p></main>;
@@ -403,6 +475,7 @@ export default function App() {
             ranking={ranking}
             note={note}
             profile={profile}
+            recordsLoading={recordsLoading}
           />
         ) : (
           <Admin
@@ -706,25 +779,33 @@ function Login({ onLogin }: { onLogin: (profile: UserProfile) => void }) {
   );
 }
 
-function Student({ screen, go, records, setRecords, ranking, note, profile }: any) {
+function Student({ screen, go, records, setRecords, ranking, note, profile, recordsLoading }: any) {
   if (screen === "home")
-    return <Home go={go} records={records} ranking={ranking} profile={profile} />;
+    return <Home go={go} records={records} ranking={ranking} profile={profile} loading={recordsLoading} />;
   if (screen === "stamps") return <Stamps go={go} records={records} />;
   if (screen === "history") return <History go={go} records={records} />;
-  if (screen === "event")
+  if (screen === "event" && records.length > 0)
     return (
       <Event record={records[0]} go={go} setRecords={setRecords} note={note} />
     );
-  if (screen === "ranking") return <Ranking visible={ranking} />;
-  return <Profile note={note} profile={profile} />;
+  if (screen === "event") return <EmptyActivities go={go} />;
+  if (screen === "ranking") return <Ranking visible={ranking} hasActivities={records.length > 0} />;
+  return <Profile note={note} profile={profile} records={records} />;
 }
-function Home({ go, records, ranking, profile }: any) {
+function Home({ go, records, ranking, profile, loading }: any) {
+  const stampCount = records.length;
+  const pointTotal = records.reduce((total: number, record: Record) => total + record.points, 0);
+  const activityHours = records.reduce((total: number, record: Record) => total + record.hours, 0);
+  const monthStampCount = records.filter((record: Record) => record.date.includes("7月")).length;
+  const nextAward = stampCount < 5 ? 5 : stampCount < 10 ? 10 : stampCount < 20 ? 20 : 30;
+  const nextAwardName = nextAward === 5 ? "ブロンズボランティア賞" : nextAward === 10 ? "シルバーボランティア賞" : nextAward === 20 ? "ゴールドボランティア賞" : "TMCボランティアマスター賞";
+  const progress = Math.min((stampCount / nextAward) * 100, 100);
   const data = [
-    ["累計スタンプ", "12", "個", Stamp],
-    ["今月のスタンプ", "2", "個", Sparkles],
-    ["今年度のスタンプ", "12", "個", Award],
-    ["累計ポイント", "186", "pt", Zap],
-    ["累計活動時間", "31", "時間", CalendarDays],
+    ["累計スタンプ", stampCount, "個", Stamp],
+    ["今月のスタンプ", monthStampCount, "個", Sparkles],
+    ["今年度のスタンプ", stampCount, "個", Award],
+    ["累計ポイント", pointTotal, "pt", Zap],
+    ["累計活動時間", activityHours, "時間", CalendarDays],
   ];
   return (
     <div className="space-y-6">
@@ -746,7 +827,7 @@ function Home({ go, records, ranking, profile }: any) {
             <Icon className="text-orange-500" size={20} />
             <p className="mt-3 text-xs font-bold text-slate-500">{label}</p>
             <p className="text-2xl font-black">
-              {num}
+              {loading ? "-" : num}
               <small className="ml-1 text-xs">{unit}</small>
             </p>
           </div>
@@ -755,19 +836,19 @@ function Home({ go, records, ranking, profile }: any) {
       <div className="grid gap-6 lg:grid-cols-5">
         <Card title="次の表彰までの進捗" className="lg:col-span-3">
           <div className="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-center">
-            <Seal code="SILVER" i={1} large />
+            <Seal code={nextAward === 5 ? "BRONZE" : nextAward === 10 ? "SILVER" : nextAward === 20 ? "GOLD" : "MASTER"} i={nextAward === 5 ? 0 : nextAward === 10 ? 1 : 2} large />
             <div className="min-w-0 flex-1">
               <b>
-                現在 <span className="text-orange-600">12スタンプ</span>
+                現在 <span className="text-orange-600">{loading ? "-" : `${stampCount}スタンプ`}</span>
               </b>
               <p className="mt-2 break-words text-sm leading-6 text-slate-500">
-                シルバーボランティア賞まであと3スタンプ
+                {nextAwardName}まであと{Math.max(nextAward - stampCount, 0)}スタンプ
               </p>
               <div className="mt-4 h-3 w-full max-w-80 overflow-hidden rounded-full bg-slate-100">
-                <div className="h-full w-4/5 bg-orange-500" />
+                <div style={{ width: `${progress}%` }} className="h-full bg-orange-500" />
               </div>
               <small className="mt-1 block text-slate-500">
-                15 / 20 スタンプ
+                {stampCount} / {nextAward} スタンプ
               </small>
             </div>
           </div>
@@ -801,7 +882,7 @@ function Home({ go, records, ranking, profile }: any) {
           </Btn>
         }
       >
-        <div className="grid gap-3 md:grid-cols-3">
+        {loading ? <p className="text-sm text-slate-500">活動記録を読み込んでいます...</p> : records.length === 0 ? <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">まだ獲得したスタンプはありません。ボランティアへ参加すると、ここに活動記録が表示されます。</p> : <div className="grid gap-3 md:grid-cols-3">
           {records.slice(0, 3).map((r: Record, i: number) => (
             <button
               key={r.id}
@@ -822,11 +903,11 @@ function Home({ go, records, ranking, profile }: any) {
               </span>
             </button>
           ))}
-        </div>
+        </div>}
       </Card>
       {ranking && (
         <Card title="あなたのランキング">
-          <div className="grid grid-cols-3 divide-x text-center">
+          {stampCount === 0 ? <p className="text-sm text-slate-500">活動実績がまだないため、ランキング順位は表示されません。</p> : <div className="grid grid-cols-3 divide-x text-center">
             <p>
               <small className="block text-slate-500">今月</small>
               <b className="text-2xl">5位</b>
@@ -839,12 +920,27 @@ function Home({ go, records, ranking, profile }: any) {
               <small className="block text-slate-500">累計</small>
               <b className="text-2xl">6位</b>
             </p>
-          </div>
+          </div>}
         </Card>
       )}
     </div>
   );
 }
+function EmptyActivities({ go }: { go: (screen: Screen) => void }) {
+  return (
+    <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-5 py-10 text-center">
+      <Stamp className="mx-auto text-slate-300" size={38} />
+      <h2 className="mt-3 font-bold text-slate-700">まだ活動記録はありません</h2>
+      <p className="mt-2 text-sm leading-6 text-slate-500">
+        ボランティアに参加してスタンプが付与されると、ここに記録が表示されます。
+      </p>
+      <div className="mt-4">
+        <Btn style="line" onClick={() => go("home")}>ホームへ戻る</Btn>
+      </div>
+    </div>
+  );
+}
+
 function Stamps({ go, records }: any) {
   const [filter, setFilter] = useState("すべて");
   return (
@@ -868,7 +964,7 @@ function Stamps({ go, records }: any) {
           )}
         </div>
       </Card>
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      {records.length === 0 ? <EmptyActivities go={go} /> : <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {records.map((r: Record, i: number) => (
           <article
             key={r.id}
@@ -894,7 +990,7 @@ function Stamps({ go, records }: any) {
             </div>
           </article>
         ))}
-      </div>
+      </div>}
     </div>
   );
 }
@@ -944,7 +1040,7 @@ function History({ go, records }: any) {
         </div>
       </Card>
       <Card title="参加したボランティア">
-        {list.map((r: Record, i: number) => (
+        {list.length === 0 ? <EmptyActivities go={go} /> : list.map((r: Record, i: number) => (
           <div
             key={r.id}
             className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 py-4 last:border-0"
@@ -1080,7 +1176,7 @@ function Event({ record, go, setRecords, note }: any) {
     </div>
   );
 }
-function Ranking({ visible }: { visible: boolean }) {
+function Ranking({ visible, hasActivities }: { visible: boolean; hasActivities: boolean }) {
   const [tab, setTab] = useState("月間");
   if (!visible)
     return (
@@ -1090,6 +1186,16 @@ function Ranking({ visible }: { visible: boolean }) {
           <h1 className="mt-4 text-xl font-bold">
             現在、ランキングは公開されていません
           </h1>
+        </div>
+      </div>
+    );
+  if (!hasActivities)
+    return (
+      <div className="grid min-h-96 place-items-center text-center">
+        <div>
+          <Trophy className="mx-auto text-slate-300" size={50} />
+          <h1 className="mt-4 text-xl font-bold">活動実績がまだありません</h1>
+          <p className="mt-2 text-sm text-slate-500">スタンプを獲得するとランキングに参加できます。</p>
         </div>
       </div>
     );
@@ -1155,9 +1261,10 @@ function Ranking({ visible }: { visible: boolean }) {
     </div>
   );
 }
-function Profile({ note, profile }: any) {
+function Profile({ note, profile, records }: any) {
   const [nickname, setNickname] = useState(profile.nickname ?? "");
   const [display, setDisplay] = useState("ニックネーム");
+  const stampCount = records.length;
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <div>
@@ -1235,18 +1342,18 @@ function Profile({ note, profile }: any) {
       <Card title="獲得バッジ">
         <div className="grid gap-3 sm:grid-cols-4">
           {[
-            ["BRONZE", "ブロンズ", true],
-            ["SILVER", "シルバー", true],
-            ["GOLD", "ゴールド", false],
-            ["MASTER", "TMCマスター", false],
-          ].map(([code, name, got], i) => (
+            ["BRONZE", "ブロンズ", 5],
+            ["SILVER", "シルバー", 10],
+            ["GOLD", "ゴールド", 20],
+            ["MASTER", "TMCマスター", 30],
+          ].map(([code, name, requirement], i) => (
             <div
               key={name as string}
-              className={`rounded-xl border p-3 ${got ? "border-orange-200 bg-orange-50" : "opacity-60"}`}
+              className={`rounded-xl border p-3 ${stampCount >= Number(requirement) ? "border-orange-200 bg-orange-50" : "opacity-60"}`}
             >
               <Seal code={code as string} i={i} />
               <b className="mt-2 block text-xs">{name as string}</b>
-              <small>{got ? "獲得済み" : "未獲得"}</small>
+              <small>{stampCount >= Number(requirement) ? "獲得済み" : `${requirement}個で獲得`}</small>
             </div>
           ))}
         </div>
