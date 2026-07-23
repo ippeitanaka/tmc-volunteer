@@ -37,6 +37,7 @@ type Screen =
   | "stamps"
   | "history"
   | "event"
+  | "sharedMemos"
   | "ranking"
   | "profile"
   | "dashboard"
@@ -307,11 +308,78 @@ async function getParticipationRecords(userId: string): Promise<Record[]> {
   });
 }
 
+type AdminDashboardData = {
+  studentCount: number;
+  monthlyStudentCount: number;
+  monthlyParticipationCount: number;
+  unverifiedCount: number;
+  pendingMemoCount: number;
+  upcomingEvents: { id: string; title: string; event_date: string }[];
+  recentLogs: { id: string; action: string; created_at: string }[];
+};
+
+async function getAdminDashboardData(): Promise<AdminDashboardData> {
+  if (!supabase) throw new Error("Supabase is not configured");
+
+  const monthStart = new Date();
+  monthStart.setDate(1);
+  monthStart.setHours(0, 0, 0, 0);
+  const today = new Date().toISOString().slice(0, 10);
+  const [students, participations, unverifiedUsers, pendingMemos, events, logs] =
+    await Promise.all([
+      supabase
+        .from("users")
+        .select("id", { count: "exact", head: true })
+        .eq("role", "student"),
+      supabase
+        .from("participations")
+        .select("user_id")
+        .eq("status", "awarded")
+        .gte("awarded_at", monthStart.toISOString()),
+      supabase
+        .from("users")
+        .select("id", { count: "exact", head: true })
+        .eq("role", "student")
+        .in("verification_status", ["unverified", "needs_review"]),
+      supabase
+        .from("activity_memos")
+        .select("id", { count: "exact", head: true })
+        .eq("visibility", "pending"),
+      supabase
+        .from("volunteer_events")
+        .select("id, title, event_date")
+        .gte("event_date", today)
+        .order("event_date", { ascending: true })
+        .limit(3),
+      supabase
+        .from("audit_logs")
+        .select("id, action, created_at")
+        .order("created_at", { ascending: false })
+        .limit(3),
+    ]);
+
+  const result = [students, participations, unverifiedUsers, pendingMemos, events, logs];
+  const failed = result.find(({ error }) => error);
+  if (failed?.error) throw failed.error;
+
+  const participationRows = participations.data ?? [];
+  return {
+    studentCount: students.count ?? 0,
+    monthlyStudentCount: new Set(participationRows.map((row) => row.user_id)).size,
+    monthlyParticipationCount: participationRows.length,
+    unverifiedCount: unverifiedUsers.count ?? 0,
+    pendingMemoCount: pendingMemos.count ?? 0,
+    upcomingEvents: events.data ?? [],
+    recentLogs: logs.data ?? [],
+  };
+}
+
 export default function App() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [screen, setScreen] = useState<Screen>("home");
   const [records, setRecords] = useState<Record[]>([]);
+  const [selectedRecordId, setSelectedRecordId] = useState<string | number | null>(null);
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [toast, setToast] = useState("");
   const [ranking, setRanking] = useState(true);
@@ -405,6 +473,7 @@ export default function App() {
     { id: "home", label: "ホーム", icon: LayoutDashboard },
     { id: "stamps", label: "スタンプ帳", icon: Stamp },
     { id: "history", label: "活動履歴", icon: CalendarDays },
+    { id: "sharedMemos", label: "共有メモ", icon: NotebookPen },
     { id: "ranking", label: "ランキング", icon: Trophy },
     { id: "profile", label: "マイページ", icon: Users },
   ];
@@ -425,13 +494,6 @@ export default function App() {
             </span>
           </button>
           <div className="flex items-center gap-2">
-            <button
-              aria-label="通知"
-              className="relative grid size-10 place-items-center rounded-xl hover:bg-slate-800"
-            >
-              <Bell size={19} />
-              <i className="absolute right-2 top-2 size-2 rounded-full bg-orange-500" />
-            </button>
             <span className="hidden text-right text-xs sm:block">
               <b className="block text-sm">
                 {profile.name}
@@ -472,6 +534,8 @@ export default function App() {
             go={go}
             records={records}
             setRecords={setRecords}
+            selectedRecordId={selectedRecordId}
+            setSelectedRecordId={setSelectedRecordId}
             ranking={ranking}
             note={note}
             profile={profile}
@@ -487,6 +551,7 @@ export default function App() {
             chosen={chosen}
             setChosen={setChosen}
             setDialog={setDialog}
+            profile={profile}
           />
         )}
       </main>
@@ -816,14 +881,15 @@ function Login({ onLogin }: { onLogin: (profile: UserProfile) => void }) {
   );
 }
 
-function Student({ screen, go, records, setRecords, ranking, note, profile, recordsLoading }: any) {
+function Student({ screen, go, records, setRecords, selectedRecordId, setSelectedRecordId, ranking, note, profile, recordsLoading }: any) {
   if (screen === "home")
     return <Home go={go} records={records} ranking={ranking} profile={profile} loading={recordsLoading} />;
   if (screen === "stamps") return <Stamps go={go} records={records} />;
-  if (screen === "history") return <History go={go} records={records} />;
+  if (screen === "history") return <History go={go} records={records} setSelectedRecordId={setSelectedRecordId} />;
+  if (screen === "sharedMemos") return <SharedMemos />;
   if (screen === "event" && records.length > 0)
     return (
-      <Event record={records[0]} go={go} setRecords={setRecords} note={note} />
+      <Event record={records.find((record: Record) => record.id === selectedRecordId) ?? records[0]} go={go} setRecords={setRecords} note={note} profile={profile} />
     );
   if (screen === "event") return <EmptyActivities go={go} />;
   if (screen === "ranking") return <Ranking visible={ranking} hasActivities={records.length > 0} />;
@@ -1031,7 +1097,7 @@ function Stamps({ go, records }: any) {
     </div>
   );
 }
-function History({ go, records }: any) {
+function History({ go, records, setSelectedRecordId }: any) {
   const [text, setText] = useState("");
   const [category, setCategory] = useState("すべて");
   const list = records.filter(
@@ -1093,8 +1159,11 @@ function History({ go, records }: any) {
             </div>
             <span className="flex items-center gap-2">
               <small className="font-bold text-slate-500">メモ: {r.memo}</small>
-              <Btn style="plain" onClick={() => go("event")}>
-                詳細
+              <Btn style="plain" onClick={() => {
+                setSelectedRecordId(r.id);
+                go("event");
+              }}>
+                共有メモを入力
               </Btn>
             </span>
           </div>
@@ -1103,29 +1172,57 @@ function History({ go, records }: any) {
     </div>
   );
 }
-function Event({ record, go, setRecords, note }: any) {
+function Event({ record, go, setRecords, note, profile }: any) {
   const [edit, setEdit] = useState(false);
-  const [advice, setAdvice] = useState(
-    "救護テントは日差しが強いので、飲み物を多めに準備すると安心です。",
-  );
-  const [visible, setVisible] = useState("自分だけに公開");
-  const save = () => {
+  const [memoText, setMemoText] = useState("");
+  const [memoStatus, setMemoStatus] = useState("未入力");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    void supabase?.from("activity_memos")
+      .select("free_memo, visibility")
+      .eq("participation_id", record.id)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (active && data) {
+          setMemoText(data.free_memo ?? "");
+          setMemoStatus(data.visibility === "public" ? "公開中" : data.visibility === "pending" ? "公開確認中" : "下書き");
+        }
+      });
+    return () => { active = false; };
+  }, [record.id]);
+
+  const save = async () => {
+    if (!memoText.trim() || !supabase) return;
+    setSaving(true);
+    const { error } = await supabase.from("activity_memos").upsert(
+      {
+        participation_id: record.id,
+        user_id: profile.id,
+        free_memo: memoText.trim(),
+        visibility: "pending",
+      },
+      { onConflict: "participation_id" },
+    );
+    setSaving(false);
+    if (error) {
+      note("共有メモを保存できませんでした");
+      return;
+    }
     setRecords((all: Record[]) =>
       all.map((x) =>
         x.id === record.id
           ? {
               ...x,
-              memo: visible === "後輩にも公開を申請" ? "公開申請中" : "非公開",
+              memo: "公開確認中",
             }
           : x,
       ),
     );
+    setMemoStatus("公開確認中");
     setEdit(false);
-    note(
-      visible === "後輩にも公開を申請"
-        ? "公開申請を送信しました"
-        : "活動メモを保存しました",
-    );
+    note("共有メモの公開申請を送信しました");
   };
   return (
     <div className="space-y-6">
@@ -1165,7 +1262,7 @@ function Event({ record, go, setRecords, note }: any) {
         </div>
       </Card>
       <Card
-        title="自分の活動メモ"
+        title="共有メモ"
         action={
           <Btn style="line" onClick={() => setEdit(!edit)}>
             <NotebookPen size={16} />
@@ -1176,40 +1273,95 @@ function Event({ record, go, setRecords, note }: any) {
         {edit ? (
           <div className="space-y-3">
             <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-800">
-              傷病者、参加者、主催者などを特定できる個人情報は入力しないでください。
+              活動内容や注意事項など、後輩に役立つ内容を自由に記入してください。個人を特定できる情報は入力しないでください。
             </p>
             <textarea
-              value={advice}
-              onChange={(e) => setAdvice(e.target.value)}
+              value={memoText}
+              onChange={(e) => setMemoText(e.target.value)}
+              placeholder="例: 集合場所、担当した内容、持ち物、注意した点など"
               className="min-h-28 w-full rounded-xl border p-3 text-sm"
             />
-            <select
-              value={visible}
-              onChange={(e) => setVisible(e.target.value)}
-              className="rounded-xl border p-3 text-sm"
-            >
-              <option>自分だけに公開</option>
-              <option>後輩にも公開を申請</option>
-            </select>
             <br />
-            <Btn onClick={save}>メモを保存する</Btn>
+            <Btn disabled={saving || !memoText.trim()} onClick={save}>
+              {saving ? "送信中..." : "共有メモを公開申請する"}
+            </Btn>
           </div>
         ) : (
           <p className="rounded-xl bg-slate-50 p-4 text-sm">
-            {record.memo === "非公開"
-              ? "まだ公開可能なメモはありません。"
-              : advice}{" "}
-            <Tag>{record.memo}</Tag>
+            {memoText || "まだ共有メモはありません。"} <Tag>{memoStatus}</Tag>
           </p>
         )}
       </Card>
-      <Card title="先輩からのアドバイス">
-        <p className="border-l-4 border-orange-400 bg-orange-50 p-4 text-sm leading-7">
-          <b>先輩からのアドバイス</b>
-          <br />
-          集合場所は駅の改札前ではなく南口広場です。早めに到着すると説明を受けやすいです。
-        </p>
+    </div>
+  );
+}
+
+function SharedMemos() {
+  const [memos, setMemos] = useState<any[]>([]);
+  const [year, setYear] = useState("all");
+  const [yearOrder, setYearOrder] = useState("newest");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    void supabase?.from("activity_memos")
+      .select("id, free_memo, created_at, participations(volunteer_events(title, event_date, category))")
+      .eq("visibility", "public")
+      .order("created_at", { ascending: false })
+      .then(({ data }) => {
+        if (active) {
+          setMemos(data ?? []);
+          setLoading(false);
+        }
+      });
+    return () => { active = false; };
+  }, []);
+
+  const eventFor = (memo: any) => {
+    const participation = Array.isArray(memo.participations) ? memo.participations[0] : memo.participations;
+    return Array.isArray(participation?.volunteer_events) ? participation.volunteer_events[0] : participation?.volunteer_events;
+  };
+  const years = [...new Set(memos.map((memo) => String(eventFor(memo)?.event_date ?? "").slice(0, 4)).filter(Boolean))].sort().reverse();
+  const visibleMemos = memos
+    .filter((memo) => year === "all" || String(eventFor(memo)?.event_date ?? "").startsWith(year))
+    .sort((left, right) => {
+      const comparison = String(eventFor(left)?.event_date ?? "").localeCompare(String(eventFor(right)?.event_date ?? ""));
+      return yearOrder === "newest" ? -comparison : comparison;
+    });
+  const groups: { [title: string]: { event: any; memos: any[] } } = {};
+  visibleMemos.forEach((memo) => {
+    const event = eventFor(memo);
+    const title = event?.title ?? "活動名未設定";
+    (groups[title] ??= { event, memos: [] }).memos.push(memo);
+  });
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <p className="font-bold text-orange-600">SHARED MEMOS</p>
+        <h1 className="text-2xl font-black">共有メモ</h1>
+        <p className="mt-2 text-sm text-slate-500">先輩が公開した活動の工夫や注意点を確認できます。</p>
+      </div>
+      <Card title="年度で絞り込む・並べ替える">
+        <div className="flex flex-wrap gap-3">
+          <select value={year} onChange={(event) => setYear(event.target.value)} className="rounded-xl border p-3 text-sm">
+            <option value="all">すべての年度</option>
+            {years.map((value) => <option key={value} value={value}>{value}年度</option>)}
+          </select>
+          <select value={yearOrder} onChange={(event) => setYearOrder(event.target.value)} className="rounded-xl border p-3 text-sm">
+            <option value="newest">新しい年度順</option>
+            <option value="oldest">古い年度順</option>
+          </select>
+        </div>
       </Card>
+      {loading ? <p className="text-sm text-slate-500">共有メモを読み込んでいます...</p> : Object.keys(groups).length === 0 ? <p className="rounded-xl bg-white p-5 text-sm text-slate-500">この年度に公開済みの共有メモはありません。</p> : Object.entries(groups).map(([title, group]) => (
+        <Card key={title} title={title}>
+          <p className="mb-4 text-sm text-slate-500">{group.event?.event_date} / {group.event?.category}</p>
+          <div className="space-y-3">
+            {group.memos.map((memo) => <p key={memo.id} className="rounded-xl bg-slate-50 p-4 text-sm leading-7 text-slate-700">{memo.free_memo}</p>)}
+          </div>
+        </Card>
+      ))}
     </div>
   );
 }
@@ -1408,6 +1560,7 @@ function Admin({
   chosen,
   setChosen,
   setDialog,
+  profile,
 }: any) {
   const active = adminMenu.find((x) => x.id === screen) || adminMenu[0];
   const body =
@@ -1426,7 +1579,7 @@ function Admin({
     ) : screen === "users" ? (
       <UserAdmin note={note} setDialog={setDialog} />
     ) : screen === "memos" ? (
-      <Memos note={note} />
+      <Memos note={note} profile={profile} />
     ) : screen === "settings" ? (
       <RankingSettings ranking={ranking} setRanking={setRanking} note={note} />
     ) : screen === "awards" ? (
@@ -1474,17 +1627,39 @@ function Admin({
     </div>
   );
 }
-function Dashboard({ go }: any) {
+function Dashboard({ go }: { go: (screen: Screen) => void }) {
+  const [data, setData] = useState<AdminDashboardData | null>(null);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    void getAdminDashboardData()
+      .then((nextData) => {
+        if (active) setData(nextData);
+      })
+      .catch(() => {
+        if (active) setError(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const stats = [
-    ["登録学生数", "128", Users],
-    ["今月の参加学生", "46", Heart],
-    ["今月の延べ参加", "71", CalendarDays],
-    ["付与スタンプ", "71", Stamp],
-    ["未確認の登録", "8", ShieldCheck],
-    ["確認待ちメモ", "5", NotebookPen],
+    ["登録学生数", data?.studentCount, Users],
+    ["今月の参加学生", data?.monthlyStudentCount, Heart],
+    ["今月の延べ参加", data?.monthlyParticipationCount, CalendarDays],
+    ["付与スタンプ", data?.monthlyParticipationCount, Stamp],
+    ["未確認の登録", data?.unverifiedCount, ShieldCheck],
+    ["確認待ちメモ", data?.pendingMemoCount, NotebookPen],
   ];
   return (
     <div className="space-y-6">
+      {error && (
+        <p className="rounded-xl bg-amber-50 p-4 text-sm font-bold text-amber-800">
+          管理データを取得できませんでした。権限と Supabase の接続設定を確認してください。
+        </p>
+      )}
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
         {stats.map(([label, num, Icon]: any) => (
           <div
@@ -1493,23 +1668,17 @@ function Dashboard({ go }: any) {
           >
             <Icon className="text-orange-500" size={20} />
             <p className="mt-3 text-xs font-bold text-slate-500">{label}</p>
-            <b className="text-2xl">{num}</b>
+            <b className="text-2xl">{data ? num : "-"}</b>
           </div>
         ))}
       </div>
       <div className="grid gap-6 xl:grid-cols-2">
-        <Card title="月別参加人数">
-          <div className="flex h-48 items-end justify-between gap-3 border-b pb-4">
-            {[40, 54, 35, 68, 76, 52, 71].map((n, i) => (
-              <div key={i} className="flex flex-1 flex-col items-center gap-2">
-                <i
-                  style={{ height: n * 1.8 }}
-                  className="w-full max-w-8 rounded-t bg-orange-400"
-                />
-                <small>{i + 1}月</small>
-              </div>
-            ))}
-          </div>
+        <Card title="今月の参加状況">
+          <p className="text-sm leading-7 text-slate-600">
+            {data
+              ? `参加学生 ${data.monthlyStudentCount}名、延べ参加 ${data.monthlyParticipationCount}件です。`
+              : "参加状況を読み込んでいます..."}
+          </p>
         </Card>
         <Card
           title="開催予定のボランティア"
@@ -1520,31 +1689,25 @@ function Dashboard({ go }: any) {
           }
         >
           <div className="space-y-3">
-            {["夏祭り救護", "オープンキャンパス運営補助", "地域清掃活動"].map(
-              (x, i) => (
+            {data?.upcomingEvents.length ? data.upcomingEvents.map((event) => (
                 <p
-                  key={x}
+                  key={event.id}
                   className="flex justify-between rounded-xl bg-slate-50 p-3 text-sm"
                 >
-                  <b>{x}</b>
-                  <Tag>7月{26 + i}日</Tag>
+                  <b>{event.title}</b>
+                  <Tag>{new Intl.DateTimeFormat("ja-JP", { month: "long", day: "numeric" }).format(new Date(`${event.event_date}T00:00:00+09:00`))}</Tag>
                 </p>
-              ),
-            )}
+              )) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-500">開催予定のボランティアはありません。</p>}
           </div>
         </Card>
       </div>
       <Card title="最近の管理操作">
         <div className="space-y-3 text-sm">
-          {[
-            "田中 一平さんへ明石国際アクアスロンのスタンプを付与",
-            "公開申請中の活動メモを承認",
-            "地域防災訓練の内容を更新",
-          ].map((x) => (
-            <p key={x} className="border-l-2 border-orange-400 pl-3">
-              {x}
+          {data?.recentLogs.length ? data.recentLogs.map((log) => (
+            <p key={log.id} className="border-l-2 border-orange-400 pl-3">
+              {log.action}
             </p>
-          ))}
+          )) : <p className="border-l-2 border-slate-300 pl-3 text-slate-500">最近の管理操作はありません。</p>}
         </div>
       </Card>
     </div>
@@ -1745,8 +1908,40 @@ function UserAdmin({ note, setDialog }: any) {
     </div>
   );
 }
-function Memos({ note }: any) {
-  const [memos, setMemos] = useState(activity);
+function Memos({ note, profile }: { note: (text: string) => void; profile: UserProfile }) {
+  const [memos, setMemos] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    void supabase?.from("activity_memos")
+      .select("id, free_memo, participations(volunteer_events(title), users(name, student_number))")
+      .eq("visibility", "pending")
+      .order("created_at", { ascending: false })
+      .then(({ data }) => {
+        if (active) {
+          setMemos(data ?? []);
+          setLoading(false);
+        }
+      });
+    return () => { active = false; };
+  }, []);
+
+  const approve = async (id: string) => {
+    if (!supabase) return;
+    const { error } = await supabase.from("activity_memos").update({
+      visibility: "public",
+      reviewed_by: profile.id,
+      reviewed_at: new Date().toISOString(),
+    }).eq("id", id);
+    if (error) {
+      note("メモを公開できませんでした");
+      return;
+    }
+    setMemos((current) => current.filter((memo) => memo.id !== id));
+    note("メモを公開承認しました");
+  };
+
   return (
     <Card title="公開確認待ちメモ">
       <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">
@@ -1754,29 +1949,21 @@ function Memos({ note }: any) {
         後輩に役立つ内容である
       </p>
       <div className="mt-4 space-y-4">
-        {memos.map((x) => (
-          <article key={x.id} className="rounded-xl border p-4">
+        {loading ? <p className="text-sm text-slate-500">共有メモを読み込んでいます...</p> : memos.length === 0 ? <p className="text-sm text-slate-500">公開確認待ちのメモはありません。</p> : memos.map((memo) => {
+          const participation = Array.isArray(memo.participations) ? memo.participations[0] : memo.participations;
+          const student = Array.isArray(participation?.users) ? participation.users[0] : participation?.users;
+          const event = Array.isArray(participation?.volunteer_events) ? participation.volunteer_events[0] : participation?.volunteer_events;
+          return <article key={memo.id} className="rounded-xl border p-4">
             <div className="flex justify-between gap-3">
               <span>
-                <b>田中 一平 / TMC26005</b>
-                <small className="ml-2 text-slate-500">{x.title}</small>
+                <b>{student?.name} / {student?.student_number}</b>
+                <small className="ml-2 text-slate-500">{event?.title}</small>
               </span>
-              <Tag>{x.memo}</Tag>
+              <Tag>公開確認中</Tag>
             </div>
-            <p className="mt-3 text-sm text-slate-600">
-              救護テントは日差しが強いので、飲み物を多めに準備すると安心です。
-            </p>
+            <p className="mt-3 whitespace-pre-wrap text-sm text-slate-600">{memo.free_memo}</p>
             <div className="mt-3 flex gap-2">
-              <Btn
-                onClick={() => {
-                  setMemos(
-                    memos.map((y) =>
-                      y.id === x.id ? { ...y, memo: "公開中" } : y,
-                    ),
-                  );
-                  note("メモを公開承認しました");
-                }}
-              >
+              <Btn onClick={() => approve(memo.id)}>
                 公開承認
               </Btn>
               <Btn
@@ -1792,8 +1979,8 @@ function Memos({ note }: any) {
                 固定
               </Btn>
             </div>
-          </article>
-        ))}
+          </article>;
+        })}
       </div>
     </Card>
   );
