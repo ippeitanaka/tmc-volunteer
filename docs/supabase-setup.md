@@ -32,16 +32,34 @@ https://*-YOUR_VERCEL_TEAM.vercel.app/**
 
 ## 3. Create the first administrator
 
-1. Create a user in **Authentication > Users**.
-2. Copy its UUID.
-3. Run this in SQL Editor, replacing the UUID and name:
+1. Create a user with an email address and password in **Authentication > Users**.
+2. Run this in SQL Editor, replacing the email address and display name. The query finds the matching Auth user automatically, so UUID copying is not required:
 
 ```sql
-insert into public.users (id, name, role, verification_status)
-values ('AUTH_USER_UUID', '管理者', 'admin', 'verified');
+insert into public.users (
+	id,
+	name,
+	role,
+	verification_status,
+	account_status
+)
+select
+	id,
+	'管理者氏名',
+	'admin',
+	'verified',
+	'active'
+from auth.users
+where email = 'admin@example.com'
+on conflict (id) do update
+set
+	name = excluded.name,
+	role = excluded.role,
+	verification_status = excluded.verification_status,
+	account_status = excluded.account_status;
 ```
 
-The `public.users` row must exist before that account can manage application data. The current migration intentionally does not allow a student to self-assign the `admin` role.
+The `public.users` row must exist before that account can manage application data. The login screen has a **管理者ログイン** button; use the same email address and password created in Authentication. The current migration intentionally does not allow a student to self-assign the `admin` role.
 
 ## 4. Recommended application wiring
 

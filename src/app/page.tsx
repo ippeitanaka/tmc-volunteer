@@ -533,6 +533,7 @@ export default function App() {
 
 function Login({ onLogin }: { onLogin: (profile: UserProfile) => void }) {
   const [register, setRegister] = useState(false);
+  const [adminLogin, setAdminLogin] = useState(false);
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({
@@ -594,6 +595,11 @@ function Login({ onLogin }: { onLogin: (profile: UserProfile) => void }) {
     }
 
     const identifier = form.number.trim();
+    if (adminLogin && !identifier.includes("@")) {
+      setError("管理者のメールアドレスを入力してください。");
+      return;
+    }
+
     const email = identifier.includes("@")
       ? identifier.toLowerCase()
       : `${identifier.toLowerCase()}@students.tmc-volunteer.local`;
@@ -614,6 +620,12 @@ function Login({ onLogin }: { onLogin: (profile: UserProfile) => void }) {
       if (!userProfile) {
         await supabase.auth.signOut();
         setError("利用者情報が見つかりません。管理者へお問い合わせください。");
+        return;
+      }
+
+      if (adminLogin && userProfile.role !== "admin") {
+        await supabase.auth.signOut();
+        setError("このアカウントには管理者権限がありません。");
         return;
       }
 
@@ -641,17 +653,22 @@ function Login({ onLogin }: { onLogin: (profile: UserProfile) => void }) {
             <form onSubmit={submit} className="space-y-4">
               <div>
                 <h2 className="text-xl font-black">
-                  {register ? "新規登録" : "ログイン"}
+                  {register ? "新規登録" : adminLogin ? "管理者ログイン" : "学生ログイン"}
                 </h2>
                 <p className="mt-1 text-sm text-slate-500">
                   {register
                     ? "登録後すぐに利用できます。"
+                    : adminLogin
+                      ? "管理者のメールアドレスとパスワードを入力してください。"
                     : "活動の記録を、未来の後輩へ。"}
                 </p>
               </div>
               <label className="block text-sm font-bold">
-                学籍番号
+                {adminLogin ? "メールアドレス" : "学籍番号"}
                 <input
+                  type={adminLogin ? "email" : "text"}
+                  autoComplete={adminLogin ? "email" : "username"}
+                  placeholder={adminLogin ? "admin@example.com" : "TMC26001"}
                   value={form.number}
                   onChange={(e) => setForm({ ...form, number: e.target.value })}
                   className={input}
@@ -727,7 +744,7 @@ function Login({ onLogin }: { onLogin: (profile: UserProfile) => void }) {
                 disabled={busy}
                 className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-orange-500 px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {busy ? "処理中..." : register ? "登録を完了する" : "ログイン"}
+                {busy ? "処理中..." : register ? "登録を完了する" : adminLogin ? "管理者としてログイン" : "ログイン"}
                 <ChevronRight size={17} />
               </button>
               {!register && (
@@ -738,7 +755,11 @@ function Login({ onLogin }: { onLogin: (profile: UserProfile) => void }) {
               {register && (
                 <button
                   type="button"
-                  onClick={() => setRegister(false)}
+                  onClick={() => {
+                    setRegister(false);
+                    setAdminLogin(false);
+                    setError("");
+                  }}
                   className="w-full text-sm font-bold text-slate-600"
                 >
                   ログインへ戻る
@@ -762,14 +783,30 @@ function Login({ onLogin }: { onLogin: (profile: UserProfile) => void }) {
                 disabled={busy}
                 onClick={() => {
                   setRegister(true);
+                  setAdminLogin(false);
                   setError("");
                 }}
               >
                 <Plus size={17} />
                 新規登録
               </Btn>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setRegister(false);
+                  setAdminLogin(!adminLogin);
+                  setError("");
+                }}
+                className="mt-3 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-slate-600 px-4 text-sm font-bold text-slate-100 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <ShieldCheck size={17} />
+                {adminLogin ? "学生ログインへ戻る" : "管理者ログイン"}
+              </button>
               <p className="mt-5 text-xs leading-6 text-slate-400">
-                ログイン情報は学校から配布されたものを使用してください。
+                {adminLogin
+                  ? "管理者として登録済みのアカウントのみ利用できます。"
+                  : "ログイン情報は学校から配布されたものを使用してください。"}
               </p>
             </div>
           </aside>
