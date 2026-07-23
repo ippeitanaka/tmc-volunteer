@@ -1567,9 +1567,9 @@ function Admin({
     screen === "dashboard" ? (
       <Dashboard go={go} />
     ) : screen === "events" ? (
-      <Events note={note} />
+      <Events />
     ) : screen === "stampAdmin" ? (
-      <StampAdmin note={note} />
+      <StampAdmin />
     ) : screen === "award" ? (
       <AwardStudents
         chosen={chosen}
@@ -1577,7 +1577,7 @@ function Admin({
         setDialog={setDialog}
       />
     ) : screen === "users" ? (
-      <UserAdmin note={note} setDialog={setDialog} />
+      <UserAdmin />
     ) : screen === "memos" ? (
       <Memos note={note} profile={profile} />
     ) : screen === "settings" ? (
@@ -1713,90 +1713,90 @@ function Dashboard({ go }: { go: (screen: Screen) => void }) {
     </div>
   );
 }
-function Events({ note }: any) {
-  const [items, setItems] = useState(activity.map((x) => x.title));
+function Events() {
+  const [events, setEvents] = useState<any[]>([]);
+  const [text, setText] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    void supabase?.from("volunteer_events")
+      .select("id, title, event_date, category, is_published, activity_hours, points")
+      .order("event_date", { ascending: false })
+      .then(({ data }) => {
+        if (active) {
+          setEvents(data ?? []);
+          setLoading(false);
+        }
+      });
+    return () => { active = false; };
+  }, []);
+
+  const visibleEvents = events.filter((event) => event.title.includes(text.trim()));
   return (
     <div className="space-y-5">
-      <div className="flex justify-between">
+      <div>
         <input
+          value={text}
+          onChange={(event) => setText(event.target.value)}
           placeholder="イベント名で検索"
           className="rounded-xl border px-3 py-2 text-sm"
         />
-        <Btn
-          onClick={() => {
-            setItems([...items, "新規ボランティアイベント"]);
-            note("イベントを作成しました");
-          }}
-        >
-          <Plus size={16} />
-          新規作成
-        </Btn>
       </div>
       <Card title="ボランティアイベント一覧">
-        {items.map((x, i) => (
+        {loading ? <p className="text-sm text-slate-500">ボランティアイベントを読み込んでいます...</p> : visibleEvents.length === 0 ? <p className="text-sm text-slate-500">登録されているボランティアイベントはありません。</p> : visibleEvents.map((event) => (
           <div
-            key={x}
+            key={event.id}
             className="flex flex-wrap justify-between gap-3 border-b py-4 text-sm last:border-0"
           >
             <span>
-              <b>{x}</b>
+              <b>{event.title}</b>
               <small className="ml-2 text-slate-500">
-                2026年7月{12 + i}日 / {i % 2 ? "防災" : "救護"} / 公開中
+                {event.event_date} / {event.category} / {event.activity_hours}時間 / {event.points}pt
               </small>
             </span>
-            <span className="flex gap-2">
-              <Btn
-                style="line"
-                onClick={() => note("イベント編集画面を開きました")}
-              >
-                編集
-              </Btn>
-              <Btn
-                style="plain"
-                onClick={() => {
-                  setItems([...items, `${x}（複製）`]);
-                  note("イベントを複製しました");
-                }}
-              >
-                複製
-              </Btn>
-            </span>
+            <Tag>{event.is_published ? "公開中" : "非公開"}</Tag>
           </div>
         ))}
       </Card>
     </div>
   );
 }
-function StampAdmin({ note }: any) {
+function StampAdmin() {
+  const [stamps, setStamps] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    void supabase?.from("stamps")
+      .select("id, name, display_text, year, shape, border_style")
+      .order("year", { ascending: false })
+      .order("name", { ascending: true })
+      .then(({ data }) => {
+        if (active) {
+          setStamps(data ?? []);
+          setLoading(false);
+        }
+      });
+    return () => { active = false; };
+  }, []);
+
   return (
     <div className="space-y-5">
-      <div className="flex justify-end">
-        <Btn onClick={() => note("スタンプ作成フォームを開きました")}>
-          <Plus size={16} />
-          新規スタンプ
-        </Btn>
-      </div>
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {activity.map((x, i) => (
-          <Card key={x.id} title={x.title}>
+      {loading ? <p className="text-sm text-slate-500">スタンプを読み込んでいます...</p> : stamps.length === 0 ? <p className="rounded-xl bg-white p-5 text-sm text-slate-500">登録されているスタンプはありません。</p> : <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        {stamps.map((stamp, index) => (
+          <Card key={stamp.id} title={stamp.name}>
             <div className="flex gap-4">
-              <Seal code={x.code} i={i} large />
+              <Seal code={stamp.display_text} i={index} large />
               <p className="text-sm text-slate-500">
-                丸型・破線
+                {stamp.shape === "round" ? "丸型" : "四角型"}・{stamp.border_style}
                 <br />
-                2026年度
-                <br />
-                <button
-                  onClick={() => note("スタンプを複製しました")}
-                  className="mt-2 font-bold text-orange-600"
-                >
-                  複製
-                </button>
+                {stamp.year}年度
               </p>
             </div>
           </Card>
         ))}
-      </div>
+      </div>}
     </div>
   );
 }
@@ -1858,50 +1858,62 @@ function AwardStudents({ chosen, setChosen, setDialog }: any) {
     </div>
   );
 }
-function UserAdmin({ note, setDialog }: any) {
+function UserAdmin() {
+  const [students, setStudents] = useState<any[]>([]);
+  const [text, setText] = useState("");
+  const [status, setStatus] = useState("all");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    void supabase?.from("users")
+      .select("id, name, student_number, verification_status, account_status, created_at")
+      .eq("role", "student")
+      .order("created_at", { ascending: false })
+      .then(({ data }) => {
+        if (active) {
+          setStudents(data ?? []);
+          setLoading(false);
+        }
+      });
+    return () => { active = false; };
+  }, []);
+
+  const visibleStudents = students.filter((student) => {
+    const matchesText = `${student.name} ${student.student_number ?? ""}`.includes(text.trim());
+    const matchesStatus = status === "all" || student.verification_status === status;
+    return matchesText && matchesStatus;
+  });
+
   return (
     <div className="space-y-5">
       <Card title="学生を検索">
         <div className="flex flex-wrap gap-3">
           <input
+            value={text}
+            onChange={(event) => setText(event.target.value)}
             placeholder="氏名・学籍番号"
             className="rounded-xl border p-3 text-sm"
           />
-          <select className="rounded-xl border p-3 text-sm">
-            <option>すべて</option>
-            <option>未確認</option>
-            <option>確認済み</option>
+          <select value={status} onChange={(event) => setStatus(event.target.value)} className="rounded-xl border p-3 text-sm">
+            <option value="all">すべて</option>
+            <option value="unverified">未確認</option>
+            <option value="needs_review">要確認</option>
+            <option value="verified">確認済み</option>
           </select>
-          <Btn style="line" onClick={() => setDialog("delete")}>
-            未確認を一括削除
-          </Btn>
         </div>
       </Card>
       <Card title="新規登録者・学生一覧">
-        {students.map((s, i) => (
+        {loading ? <p className="text-sm text-slate-500">学生情報を読み込んでいます...</p> : visibleStudents.length === 0 ? <p className="text-sm text-slate-500">該当する学生はいません。</p> : visibleStudents.map((student) => (
           <div
-            key={s.number}
+            key={student.id}
             className="flex flex-wrap justify-between gap-3 border-b py-3 text-sm last:border-0"
           >
             <span>
-              <b>{s.name}</b>
-              <small className="ml-2 text-slate-500">{s.number}</small>
+              <b>{student.name}</b>
+              <small className="ml-2 text-slate-500">{student.student_number}</small>
             </span>
-            <span className="flex gap-2">
-              <Tag>{i < 3 ? "未確認" : "確認済み"}</Tag>
-              <Btn style="plain" onClick={() => note("学生情報を確認しました")}>
-                確認
-              </Btn>
-              <Btn style="plain" onClick={() => setDialog("stop")}>
-                停止
-              </Btn>
-              <Btn
-                style="plain"
-                onClick={() => note("一時パスワード: TMC-7A9K（1回のみ有効）")}
-              >
-                リセット
-              </Btn>
-            </span>
+            <span className="flex gap-2"><Tag>{student.verification_status === "verified" ? "確認済み" : student.verification_status === "needs_review" ? "要確認" : "未確認"}</Tag><Tag>{student.account_status === "active" ? "有効" : student.account_status}</Tag></span>
           </div>
         ))}
       </Card>
