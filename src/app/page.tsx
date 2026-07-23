@@ -182,11 +182,13 @@ function Btn({
   onClick,
   style = "main",
   disabled = false,
+  type = "button",
 }: {
   children: ReactNode;
   onClick?: () => void;
   style?: "main" | "line" | "plain" | "danger";
   disabled?: boolean;
+  type?: "button" | "submit";
 }) {
   const styles = {
     main: "bg-orange-500 text-white hover:bg-orange-600",
@@ -196,6 +198,7 @@ function Btn({
   };
   return (
     <button
+      type={type}
       disabled={disabled}
       onClick={onClick}
       className={`inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-bold transition disabled:opacity-50 ${styles[style]}`}
@@ -1572,9 +1575,7 @@ function Admin({
       <StampAdmin />
     ) : screen === "award" ? (
       <AwardStudents
-        chosen={chosen}
-        setChosen={setChosen}
-        setDialog={setDialog}
+        profile={profile}
       />
     ) : screen === "users" ? (
       <UserAdmin />
@@ -1583,7 +1584,7 @@ function Admin({
     ) : screen === "settings" ? (
       <RankingSettings ranking={ranking} setRanking={setRanking} note={note} />
     ) : screen === "awards" ? (
-      <Awards note={note} />
+      <Awards />
     ) : (
       <Logs />
     );
@@ -1717,32 +1718,73 @@ function Events() {
   const [events, setEvents] = useState<any[]>([]);
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState<any | null>(null);
+  const [form, setForm] = useState({ title: "", event_date: "", location: "", category: "", activity_hours: "1", points: "0", is_published: false });
+
+  const loadEvents = async () => {
+    const { data } = await supabase!.from("volunteer_events")
+      .select("id, title, event_date, location, category, is_published, activity_hours, points")
+      .order("event_date", { ascending: false });
+    setEvents(data ?? []);
+    setLoading(false);
+  };
 
   useEffect(() => {
-    let active = true;
-    void supabase?.from("volunteer_events")
-      .select("id, title, event_date, category, is_published, activity_hours, points")
-      .order("event_date", { ascending: false })
-      .then(({ data }) => {
-        if (active) {
-          setEvents(data ?? []);
-          setLoading(false);
-        }
-      });
-    return () => { active = false; };
+    void loadEvents();
   }, []);
+
+  const openForm = (event?: any) => {
+    setEditing(event ?? {});
+    setForm(event ? { ...event, activity_hours: String(event.activity_hours), points: String(event.points) } : { title: "", event_date: "", location: "", category: "", activity_hours: "1", points: "0", is_published: false });
+  };
+  const save = async (event: FormEvent) => {
+    event.preventDefault();
+    const payload = { ...form, activity_hours: Number(form.activity_hours), points: Number(form.points) };
+    const query = editing?.id
+      ? supabase!.from("volunteer_events").update(payload).eq("id", editing.id)
+      : supabase!.from("volunteer_events").insert(payload);
+    const { error } = await query;
+    if (error) {
+      window.alert(`イベントを保存できませんでした: ${error.message}`);
+      return;
+    }
+    setEditing(null);
+    await loadEvents();
+  };
+  const remove = async (id: string) => {
+    if (!window.confirm("このボランティアイベントを削除しますか？")) return;
+    const { error } = await supabase!.from("volunteer_events").delete().eq("id", id);
+    if (error) {
+      window.alert(`イベントを削除できませんでした: ${error.message}`);
+      return;
+    }
+    await loadEvents();
+  };
 
   const visibleEvents = events.filter((event) => event.title.includes(text.trim()));
   return (
     <div className="space-y-5">
-      <div>
+      <div className="flex flex-wrap justify-between gap-3">
         <input
           value={text}
           onChange={(event) => setText(event.target.value)}
           placeholder="イベント名で検索"
           className="rounded-xl border px-3 py-2 text-sm"
         />
+        <Btn onClick={() => openForm()}><Plus size={16} />新規作成</Btn>
       </div>
+      {editing && <Card title={editing.id ? "イベントを編集" : "イベントを作成"}>
+        <form onSubmit={save} className="grid gap-3 md:grid-cols-2">
+          <input required value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} placeholder="イベント名" className="rounded-xl border p-3 text-sm" />
+          <input required type="date" value={form.event_date} onChange={(event) => setForm({ ...form, event_date: event.target.value })} className="rounded-xl border p-3 text-sm" />
+          <input required value={form.location} onChange={(event) => setForm({ ...form, location: event.target.value })} placeholder="開催場所" className="rounded-xl border p-3 text-sm" />
+          <input required value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })} placeholder="カテゴリー" className="rounded-xl border p-3 text-sm" />
+          <input required min="0.5" step="0.5" type="number" value={form.activity_hours} onChange={(event) => setForm({ ...form, activity_hours: event.target.value })} placeholder="活動時間" className="rounded-xl border p-3 text-sm" />
+          <input required min="0" type="number" value={form.points} onChange={(event) => setForm({ ...form, points: event.target.value })} placeholder="ポイント" className="rounded-xl border p-3 text-sm" />
+          <label className="flex items-center gap-2 text-sm font-bold"><input type="checkbox" checked={form.is_published} onChange={(event) => setForm({ ...form, is_published: event.target.checked })} className="size-4 accent-orange-500" />学生へ公開する</label>
+          <div className="flex gap-2"><Btn type="submit">保存する</Btn><Btn style="line" onClick={() => setEditing(null)}>キャンセル</Btn></div>
+        </form>
+      </Card>}
       <Card title="ボランティアイベント一覧">
         {loading ? <p className="text-sm text-slate-500">ボランティアイベントを読み込んでいます...</p> : visibleEvents.length === 0 ? <p className="text-sm text-slate-500">登録されているボランティアイベントはありません。</p> : visibleEvents.map((event) => (
           <div
@@ -1755,7 +1797,7 @@ function Events() {
                 {event.event_date} / {event.category} / {event.activity_hours}時間 / {event.points}pt
               </small>
             </span>
-            <Tag>{event.is_published ? "公開中" : "非公開"}</Tag>
+            <span className="flex gap-1"><Tag>{event.is_published ? "公開中" : "非公開"}</Tag><Btn style="plain" onClick={() => openForm(event)}>編集</Btn><Btn style="plain" onClick={() => remove(event.id)}>削除</Btn></span>
           </div>
         ))}
       </Card>
@@ -1765,24 +1807,58 @@ function Events() {
 function StampAdmin() {
   const [stamps, setStamps] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState<any | null>(null);
+  const [form, setForm] = useState({ name: "", display_text: "", year: String(new Date().getFullYear()), shape: "round", border_style: "dashed" });
+
+  const loadStamps = async () => {
+    const { data } = await supabase!.from("stamps").select("id, name, display_text, year, shape, border_style").order("year", { ascending: false }).order("name", { ascending: true });
+    setStamps(data ?? []);
+    setLoading(false);
+  };
 
   useEffect(() => {
-    let active = true;
-    void supabase?.from("stamps")
-      .select("id, name, display_text, year, shape, border_style")
-      .order("year", { ascending: false })
-      .order("name", { ascending: true })
-      .then(({ data }) => {
-        if (active) {
-          setStamps(data ?? []);
-          setLoading(false);
-        }
-      });
-    return () => { active = false; };
+    void loadStamps();
   }, []);
+
+  const openForm = (stamp?: any) => {
+    setEditing(stamp ?? {});
+    setForm(stamp ? { ...stamp, year: String(stamp.year) } : { name: "", display_text: "", year: String(new Date().getFullYear()), shape: "round", border_style: "dashed" });
+  };
+  const save = async (event: FormEvent) => {
+    event.preventDefault();
+    const payload = { ...form, year: Number(form.year) };
+    const query = editing?.id ? supabase!.from("stamps").update(payload).eq("id", editing.id) : supabase!.from("stamps").insert(payload);
+    const { error } = await query;
+    if (error) {
+      window.alert(`スタンプを保存できませんでした: ${error.message}`);
+      return;
+    }
+    setEditing(null);
+    await loadStamps();
+  };
+  const remove = async (id: string) => {
+    if (!window.confirm("このスタンプを削除しますか？")) return;
+    const { error } = await supabase!.from("stamps").delete().eq("id", id);
+    if (error) {
+      window.alert(`スタンプを削除できませんでした: ${error.message}`);
+      return;
+    }
+    await loadStamps();
+  };
 
   return (
     <div className="space-y-5">
+      <div className="flex justify-end"><Btn onClick={() => openForm()}><Plus size={16} />新規スタンプ</Btn></div>
+      {editing && <Card title={editing.id ? "スタンプを編集" : "スタンプを作成"}>
+        <form onSubmit={save} className="grid gap-3 md:grid-cols-2">
+          <input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="スタンプ名" className="rounded-xl border p-3 text-sm" />
+          <input required value={form.display_text} onChange={(event) => setForm({ ...form, display_text: event.target.value })} placeholder="スタンプ表示文字" className="rounded-xl border p-3 text-sm" />
+          <input required min="2000" max="2100" type="number" value={form.year} onChange={(event) => setForm({ ...form, year: event.target.value })} placeholder="年度" className="rounded-xl border p-3 text-sm" />
+          <select value={form.shape} onChange={(event) => setForm({ ...form, shape: event.target.value })} className="rounded-xl border p-3 text-sm"><option value="round">丸型</option><option value="square">四角型</option></select>
+          <select value={form.border_style} onChange={(event) => setForm({ ...form, border_style: event.target.value })} className="rounded-xl border p-3 text-sm"><option value="dashed">破線</option><option value="solid">実線</option><option value="double">二重線</option><option value="none">なし</option></select>
+          <div className="flex gap-2"><Btn type="submit">保存する</Btn><Btn style="line" onClick={() => setEditing(null)}>キャンセル</Btn></div>
+        </form>
+      </Card>}
       {loading ? <p className="text-sm text-slate-500">スタンプを読み込んでいます...</p> : stamps.length === 0 ? <p className="rounded-xl bg-white p-5 text-sm text-slate-500">登録されているスタンプはありません。</p> : <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {stamps.map((stamp, index) => (
           <Card key={stamp.id} title={stamp.name}>
@@ -1793,6 +1869,7 @@ function StampAdmin() {
                 <br />
                 {stamp.year}年度
               </p>
+              <div className="ml-auto flex flex-col gap-1"><Btn style="plain" onClick={() => openForm(stamp)}>編集</Btn><Btn style="plain" onClick={() => remove(stamp.id)}>削除</Btn></div>
             </div>
           </Card>
         ))}
@@ -1800,27 +1877,57 @@ function StampAdmin() {
     </div>
   );
 }
-function AwardStudents({ chosen, setChosen, setDialog }: any) {
+function AwardStudents({ profile }: { profile: UserProfile }) {
+  const [events, setEvents] = useState<any[]>([]);
+  const [students, setStudents] = useState<any[]>([]);
   const [text, setText] = useState("");
-  const list = students.filter(
-    (s) => s.name.includes(text) || s.number.includes(text),
-  );
-  const toggle = (number: string) =>
-    setChosen((old: string[]) =>
-      old.includes(number) ? old.filter((x) => x !== number) : [...old, number],
+  const [eventId, setEventId] = useState("");
+  const [chosenIds, setChosenIds] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void Promise.all([
+      supabase!.from("volunteer_events").select("id, title, activity_hours, points").order("event_date", { ascending: false }),
+      supabase!.from("users").select("id, name, student_number, verification_status").eq("role", "student").eq("account_status", "active").order("name"),
+    ]).then(([eventResult, studentResult]) => {
+      setEvents(eventResult.data ?? []);
+      setStudents(studentResult.data ?? []);
+    });
+  }, []);
+
+  const list = students.filter((student) => `${student.name} ${student.student_number ?? ""}`.includes(text.trim()));
+  const toggle = (id: string) => setChosenIds((current) => current.includes(id) ? current.filter((studentId) => studentId !== id) : [...current, id]);
+  const award = async () => {
+    const event = events.find((item) => item.id === eventId);
+    if (!event || chosenIds.length === 0) return;
+    setBusy(true);
+    const { error } = await supabase!.from("participations").upsert(
+      chosenIds.map((userId) => ({
+        user_id: userId,
+        volunteer_event_id: event.id,
+        awarded_by: profile.id,
+        activity_hours: event.activity_hours,
+        points: event.points,
+        status: "awarded",
+      })),
+      { onConflict: "user_id,volunteer_event_id", ignoreDuplicates: true },
     );
+    setBusy(false);
+    if (!error) setChosenIds([]);
+  };
+
   return (
     <div className="space-y-5">
       <Card title="1. ボランティアイベントを選択">
-        <select className="w-full rounded-xl border p-3">
-          <option>明石国際アクアスロン（5時間 / 20pt）</option>
-          <option>地域防災訓練（3時間 / 15pt）</option>
+        <select value={eventId} onChange={(event) => setEventId(event.target.value)} className="w-full rounded-xl border p-3">
+          <option value="">イベントを選択してください</option>
+          {events.map((event) => <option key={event.id} value={event.id}>{event.title}（{event.activity_hours}時間 / {event.points}pt）</option>)}
         </select>
       </Card>
       <Card
         title="2. 参加学生を選択"
         action={
-          <b className="text-sm text-orange-600">{chosen.length}名を選択中</b>
+          <b className="text-sm text-orange-600">{chosenIds.length}名を選択中</b>
         }
       >
         <label className="relative">
@@ -1833,27 +1940,27 @@ function AwardStudents({ chosen, setChosen, setDialog }: any) {
           />
         </label>
         <div className="mt-4 divide-y">
-          {list.map((s) => (
-            <label key={s.number} className="flex justify-between py-3 text-sm">
+          {list.length === 0 ? <p className="py-3 text-sm text-slate-500">該当する学生はいません。</p> : list.map((student) => (
+            <label key={student.id} className="flex justify-between py-3 text-sm">
               <span>
-                <b>{s.name}</b>
+                <b>{student.name}</b>
                 <small className="ml-2 text-slate-500">
-                  {s.number} / 確認済み
+                  {student.student_number} / {student.verification_status === "verified" ? "確認済み" : "未確認"}
                 </small>
               </span>
               <input
                 type="checkbox"
-                checked={chosen.includes(s.number)}
-                onChange={() => toggle(s.number)}
+                checked={chosenIds.includes(student.id)}
+                onChange={() => toggle(student.id)}
                 className="size-5 accent-orange-500"
               />
             </label>
           ))}
         </div>
       </Card>
-      <Btn disabled={!chosen.length} onClick={() => setDialog("award")}>
+      <Btn disabled={!eventId || !chosenIds.length || busy} onClick={award}>
         <Sparkles size={17} />
-        {chosen.length}名へ一括付与する
+        {busy ? "付与中..." : `${chosenIds.length}名へ一括付与する`}
       </Btn>
     </div>
   );
@@ -2053,15 +2160,26 @@ function RankingSettings({ ranking, setRanking, note }: any) {
     </Card>
   );
 }
-function Awards({ note }: any) {
+function Awards() {
+  const [recipients, setRecipients] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    void supabase?.from("award_recipients")
+      .select("id, awarded_on, prize_received_at, awards(name), users(name, student_number)")
+      .order("awarded_on", { ascending: false })
+      .then(({ data }) => {
+        if (active) {
+          setRecipients(data ?? []);
+          setLoading(false);
+        }
+      });
+    return () => { active = false; };
+  }, []);
+
   return (
     <div className="space-y-5">
-      <div className="flex justify-end">
-        <Btn onClick={() => note("表彰条件の作成フォームを開きました")}>
-          <Plus size={16} />
-          表彰条件を追加
-        </Btn>
-      </div>
       <Card title="表彰対象者一覧">
         <div className="overflow-x-auto">
           <table className="w-full min-w-150 text-left text-sm">
@@ -2069,27 +2187,23 @@ function Awards({ note }: any) {
               <tr className="border-b text-xs text-slate-500">
                 <th className="p-3">学生名</th>
                 <th>学籍番号</th>
-                <th>スタンプ</th>
-                <th>ポイント</th>
                 <th>表彰名</th>
+                <th>表彰日</th>
                 <th>受取状況</th>
               </tr>
             </thead>
             <tbody>
-              {students.slice(0, 6).map((s, i) => (
-                <tr key={s.number} className="border-b">
-                  <td className="p-3 font-bold">{s.name}</td>
-                  <td>{s.number}</td>
-                  <td>{s.stamps}</td>
-                  <td>{s.points}</td>
-                  <td>
-                    {i < 3 ? "シルバーボランティア" : "ブロンズボランティア"}
-                  </td>
-                  <td>
-                    <Tag>{i === 0 ? "受取済み" : "未受取"}</Tag>
-                  </td>
-                </tr>
-              ))}
+              {loading ? <tr><td colSpan={5} className="p-3 text-slate-500">表彰情報を読み込んでいます...</td></tr> : recipients.length === 0 ? <tr><td colSpan={5} className="p-3 text-slate-500">表彰対象者はまだ登録されていません。</td></tr> : recipients.map((recipient) => {
+                const student = Array.isArray(recipient.users) ? recipient.users[0] : recipient.users;
+                const award = Array.isArray(recipient.awards) ? recipient.awards[0] : recipient.awards;
+                return <tr key={recipient.id} className="border-b">
+                  <td className="p-3 font-bold">{student?.name}</td>
+                  <td>{student?.student_number}</td>
+                  <td>{award?.name}</td>
+                  <td>{recipient.awarded_on}</td>
+                  <td><Tag>{recipient.prize_received_at ? "受取済み" : "未受取"}</Tag></td>
+                </tr>;
+              })}
             </tbody>
           </table>
         </div>
