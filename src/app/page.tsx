@@ -900,6 +900,28 @@ function Student({ screen, go, records, setRecords, selectedRecordId, setSelecte
 }
 function Home({ go, records, ranking, profile, loading }: any) {
   const stampCount = records.length;
+  const [myRanks, setMyRanks] = useState<{ monthly: number | null; yearly: number | null; allTime: number | null }>({ monthly: null, yearly: null, allTime: null });
+  const [ranksLoading, setRanksLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    const rankFor = async (period: "monthly" | "yearly" | "all_time") => {
+      const { data } = await supabase!.rpc("get_volunteer_ranking", { period });
+      const entries = (data ?? []) as { user_id: string }[];
+      const index = entries.findIndex((entry) => entry.user_id === profile.id);
+      return index >= 0 ? index + 1 : null;
+    };
+
+    void Promise.all([rankFor("monthly"), rankFor("yearly"), rankFor("all_time")])
+      .then(([monthly, yearly, allTime]) => {
+        if (active) setMyRanks({ monthly, yearly, allTime });
+      })
+      .finally(() => {
+        if (active) setRanksLoading(false);
+      });
+    return () => { active = false; };
+  }, [profile.id]);
+
   const pointTotal = records.reduce((total: number, record: Record) => total + record.points, 0);
   const activityHours = records.reduce((total: number, record: Record) => total + record.hours, 0);
   const monthStampCount = records.filter((record: Record) => record.date.includes("7月")).length;
@@ -1016,15 +1038,15 @@ function Home({ go, records, ranking, profile, loading }: any) {
           {stampCount === 0 ? <p className="text-sm text-slate-500">活動実績がまだないため、ランキング順位は表示されません。</p> : <div className="grid grid-cols-3 divide-x text-center">
             <p>
               <small className="block text-slate-500">今月</small>
-              <b className="text-2xl">5位</b>
+              <b className="text-2xl">{ranksLoading ? "-" : myRanks.monthly ? `${myRanks.monthly}位` : "対象外"}</b>
             </p>
             <p>
               <small className="block text-slate-500">年間</small>
-              <b className="text-2xl">4位</b>
+              <b className="text-2xl">{ranksLoading ? "-" : myRanks.yearly ? `${myRanks.yearly}位` : "対象外"}</b>
             </p>
             <p>
               <small className="block text-slate-500">累計</small>
-              <b className="text-2xl">6位</b>
+              <b className="text-2xl">{ranksLoading ? "-" : myRanks.allTime ? `${myRanks.allTime}位` : "対象外"}</b>
             </p>
           </div>}
         </Card>
