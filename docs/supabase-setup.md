@@ -20,6 +20,8 @@ SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
 
 `SUPABASE_SERVICE_ROLE_KEY` must only be used in server-side code. Never prefix it with `NEXT_PUBLIC_`, expose it to the browser, or store it in Git.
 
+The application registration endpoint uses `SUPABASE_SERVICE_ROLE_KEY` to create an Auth user and its matching `public.users` profile in one server-side request. In Vercel, add all three values under **Settings > Environment Variables** for Production, Preview, and Development, then redeploy. Connecting a Supabase integration alone does not guarantee that the service-role key is available to the application.
+
 In **Authentication > URL Configuration**, set the Site URL to the Vercel production URL and add local and preview redirect URLs, for example:
 
 ```text
@@ -45,7 +47,8 @@ The `public.users` row must exist before that account can manage application dat
 
 - Install `@supabase/ssr` and `@supabase/supabase-js` when replacing the demo repository.
 - Use `@supabase/ssr` browser and server clients; keep the service-role client in server-only modules.
-- Perform registration in a server action: create the Auth user, then insert `public.users` with `role = 'student'`, `verification_status = 'unverified'`, and `account_status = 'active'`.
+- The included `/api/auth/register` Route Handler creates the Auth user, then inserts `public.users` with `role = 'student'`, `verification_status = 'unverified'`, and `account_status = 'active'`. It uses a server-only service-role client and deletes the Auth user if profile creation fails.
+- Students log in with their student number and password. Internally, the app maps a student number to a non-public Auth email address. Administrators can enter their configured Auth email address in the same field.
 - Award/revoke stamps, approve/return memos, change account states, and write `audit_logs` only from server actions after validating the administrator role.
 - Use `Asia/Tokyo` in application date formatting. PostgreSQL timestamps are stored as `timestamptz` and should remain in UTC.
 

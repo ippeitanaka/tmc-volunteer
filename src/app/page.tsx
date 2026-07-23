@@ -1,7 +1,8 @@
 "use client";
 
-import { FormEvent, ReactNode, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useState } from "react";
 import Image from "next/image";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase/client";
 import {
   Award,
   Bell,
@@ -57,6 +58,13 @@ type Record = {
   code: string;
   category: string;
   memo: string;
+};
+type UserProfile = {
+  id: string;
+  name: string;
+  student_number: string | null;
+  nickname: string | null;
+  role: Role;
 };
 
 const activity: Record[] = [
@@ -244,8 +252,22 @@ function Seal({
   );
 }
 
+async function getUserProfile(userId: string): Promise<UserProfile | null> {
+  if (!supabase) return null;
+
+  const { data, error } = await supabase
+    .from("users")
+    .select("id, name, student_number, nickname, role")
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data as UserProfile | null;
+}
+
 export default function App() {
-  const [role, setRole] = useState<Role | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [screen, setScreen] = useState<Screen>("home");
   const [records, setRecords] = useState(activity);
   const [toast, setToast] = useState("");
@@ -262,12 +284,47 @@ export default function App() {
     setScreen(next);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
-  if (!role)
+
+  useEffect(() => {
+    let active = true;
+
+    async function restoreSession() {
+      if (!supabase) {
+        if (active) setAuthLoading(false);
+        return;
+      }
+
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        try {
+          const restoredProfile = await getUserProfile(session.user.id);
+          if (active) setProfile(restoredProfile);
+        } catch {
+          await supabase.auth.signOut();
+        }
+      }
+
+      if (active) setAuthLoading(false);
+    }
+
+    void restoreSession();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const role = profile?.role ?? null;
+
+  if (authLoading) {
+    return <main className="grid min-h-screen place-items-center bg-slate-100"><p className="rounded-xl bg-white px-5 py-4 text-sm font-bold text-slate-600 shadow-sm">ログイン情報を確認しています...</p></main>;
+  }
+
+  if (!profile)
     return (
       <Login
-        onLogin={(next: Role) => {
-          setRole(next);
-          go(next === "admin" ? "dashboard" : "home");
+        onLogin={(nextProfile: UserProfile) => {
+          setProfile(nextProfile);
+          go(nextProfile.role === "admin" ? "dashboard" : "home");
           note("ログインしました");
         }}
       />
@@ -305,14 +362,15 @@ export default function App() {
             </button>
             <span className="hidden text-right text-xs sm:block">
               <b className="block text-sm">
-                {role === "admin" ? "管理者" : "田中 一平"}
+                {profile.name}
               </b>
-              {role === "admin" ? "管理者アカウント" : "TMC26005"}
+              {role === "admin" ? "管理者" : profile.student_number}
             </span>
             <Btn
               style="plain"
-              onClick={() => {
-                setRole(null);
+              onClick={async () => {
+                await supabase?.auth.signOut();
+                setProfile(null);
                 note("ログアウトしました");
               }}
             >
@@ -344,6 +402,7 @@ export default function App() {
             setRecords={setRecords}
             ranking={ranking}
             note={note}
+            profile={profile}
           />
         ) : (
           <Admin
@@ -399,9 +458,10 @@ export default function App() {
   );
 }
 
-function Login({ onLogin }: { onLogin: (role: Role) => void }) {
+function Login({ onLogin }: { onLogin: (profile: UserProfile) => void }) {
   const [register, setRegister] = useState(false);
   const [show, setShow] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({
     number: "",
     password: "",
@@ -412,8 +472,10 @@ function Login({ onLogin }: { onLogin: (role: Role) => void }) {
   const [error, setError] = useState("");
   const input =
     "mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm outline-none focus:border-orange-500 focus:ring-4 focus:ring-orange-100";
-  const submit = (e: FormEvent) => {
+  const submit = async (e: FormEvent) => {
     e.preventDefault();
+    setError("");
+
     if (register) {
       if (!form.number || !form.name)
         return setError("学籍番号と氏名を入力してください");
@@ -422,11 +484,72 @@ function Login({ onLogin }: { onLogin: (role: Role) => void }) {
       if (form.password !== form.confirm)
         return setError("パスワードと確認用パスワードが一致しません");
       if (!form.agreed) return setError("利用上の注意への同意が必要です");
-      setRegister(false);
-      setError("登録が完了しました。ログインしてください。");
+
+      setBusy(true);
+      try {
+        const response = await fetch("/api/auth/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            studentNumber: form.number,
+            name: form.name,
+            password: form.password,
+          }),
+        });
+        const result = (await response.json()) as { error?: string };
+
+        if (!response.ok) {
+          setError(result.error ?? "登録処理に失敗しました。");
+          return;
+        }
+
+        setRegister(false);
+        setForm({ ...form, name: "", confirm: "", agreed: false });
+        setError("登録が完了しました。ログインしてください。");
+      } catch {
+        setError("通信に失敗しました。接続を確認してもう一度お試しください。");
+      } finally {
+        setBusy(false);
+      }
+
       return;
     }
-    onLogin(form.number.toLowerCase() === "admin" ? "admin" : "student");
+
+    if (!supabase || !isSupabaseConfigured) {
+      setError("Supabase の接続設定が不足しています。管理者へお問い合わせください。");
+      return;
+    }
+
+    const identifier = form.number.trim();
+    const email = identifier.includes("@")
+      ? identifier.toLowerCase()
+      : `${identifier.toLowerCase()}@students.tmc-volunteer.local`;
+
+    setBusy(true);
+    try {
+      const { data, error: signInError } = await supabase.auth.signInWithPassword({
+        email,
+        password: form.password,
+      });
+
+      if (signInError || !data.user) {
+        setError("学籍番号またはパスワードを確認してください。");
+        return;
+      }
+
+      const userProfile = await getUserProfile(data.user.id);
+      if (!userProfile) {
+        await supabase.auth.signOut();
+        setError("利用者情報が見つかりません。管理者へお問い合わせください。");
+        return;
+      }
+
+      onLogin(userProfile);
+    } catch {
+      setError("ログイン処理に失敗しました。しばらくしてからもう一度お試しください。");
+    } finally {
+      setBusy(false);
+    }
   };
   return (
     <main className="grid min-h-screen place-items-center bg-slate-100 p-4">
@@ -527,8 +650,11 @@ function Login({ onLogin }: { onLogin: (role: Role) => void }) {
                   {error}
                 </p>
               )}
-              <button className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-orange-500 px-4 text-sm font-bold text-white">
-                {register ? "登録を完了する" : "ログイン"}
+              <button
+                disabled={busy}
+                className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-orange-500 px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {busy ? "処理中..." : register ? "登録を完了する" : "ログイン"}
                 <ChevronRight size={17} />
               </button>
               {!register && (
@@ -560,6 +686,7 @@ function Login({ onLogin }: { onLogin: (role: Role) => void }) {
             </div>
             <div>
               <Btn
+                disabled={busy}
                 onClick={() => {
                   setRegister(true);
                   setError("");
@@ -579,9 +706,9 @@ function Login({ onLogin }: { onLogin: (role: Role) => void }) {
   );
 }
 
-function Student({ screen, go, records, setRecords, ranking, note }: any) {
+function Student({ screen, go, records, setRecords, ranking, note, profile }: any) {
   if (screen === "home")
-    return <Home go={go} records={records} ranking={ranking} />;
+    return <Home go={go} records={records} ranking={ranking} profile={profile} />;
   if (screen === "stamps") return <Stamps go={go} records={records} />;
   if (screen === "history") return <History go={go} records={records} />;
   if (screen === "event")
@@ -589,9 +716,9 @@ function Student({ screen, go, records, setRecords, ranking, note }: any) {
       <Event record={records[0]} go={go} setRecords={setRecords} note={note} />
     );
   if (screen === "ranking") return <Ranking visible={ranking} />;
-  return <Profile note={note} />;
+  return <Profile note={note} profile={profile} />;
 }
-function Home({ go, records, ranking }: any) {
+function Home({ go, records, ranking, profile }: any) {
   const data = [
     ["累計スタンプ", "12", "個", Stamp],
     ["今月のスタンプ", "2", "個", Sparkles],
@@ -604,7 +731,7 @@ function Home({ go, records, ranking }: any) {
       <div>
         <p className="font-bold text-orange-600">2026年度</p>
         <h1 className="text-2xl font-black sm:text-3xl">
-          田中 一平さん、おかえりなさい！
+          {profile.name}さん、おかえりなさい！
         </h1>
         <p className="mt-2 text-sm text-slate-500">
           次の活動も、あなたの力を待っています。
@@ -1028,8 +1155,8 @@ function Ranking({ visible }: { visible: boolean }) {
     </div>
   );
 }
-function Profile({ note }: any) {
-  const [nickname, setNickname] = useState("いっぺい");
+function Profile({ note, profile }: any) {
+  const [nickname, setNickname] = useState(profile.nickname ?? "");
   const [display, setDisplay] = useState("ニックネーム");
   return (
     <div className="mx-auto max-w-3xl space-y-6">
@@ -1043,7 +1170,7 @@ function Profile({ note }: any) {
             氏名
             <input
               disabled
-              value="田中 一平"
+              value={profile.name}
               className="mt-1 w-full rounded-xl border bg-slate-100 p-3 text-slate-500"
             />
           </label>
@@ -1051,7 +1178,7 @@ function Profile({ note }: any) {
             学籍番号
             <input
               disabled
-              value="TMC26005"
+              value={profile.student_number ?? ""}
               className="mt-1 w-full rounded-xl border bg-slate-100 p-3 text-slate-500"
             />
           </label>
